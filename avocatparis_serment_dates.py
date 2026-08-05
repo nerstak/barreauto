@@ -24,6 +24,7 @@ import requests
 ENTRYPOINT_URL = "https://ssl.avocatparis.org/eInscription/Accueil.aspx"
 DATES_PAGE_URL = "https://ssl.avocatparis.org/eInscription/PaiementEtDateSerment.aspx"
 DATES_ENDPOINT_URL = f"{DATES_PAGE_URL}/ListerDatesSerment"
+FREE_DATES_VIEW_URL = "https://ssl.avocatparis.org/einscription/Accueil.aspx"
 NTFY_BASE_URL = (os.getenv("NTFY_BASE_URL") or "https://ntfy.sh").rstrip("/")
 DEFAULT_TIMEOUT = 30
 USER_AGENTS = [
@@ -319,17 +320,22 @@ def publish_ntfy(
     title: str,
     tags: str,
     priority: str,
+    actions: str | None = None,
     timeout: int,
 ) -> dict[str, Any]:
     try:
+        headers = {
+            "Title": title,
+            "Tags": tags,
+            "Priority": priority,
+        }
+        if actions:
+            headers["Actions"] = actions
+
         response = requests.post(
             f"{NTFY_BASE_URL}/{channel}",
             data=message.encode("utf-8"),
-            headers={
-                "Title": title,
-                "Tags": tags,
-                "Priority": priority,
-            },
+            headers=headers,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -367,6 +373,7 @@ def send_success_notifications(
                 title="Run report",
                 tags="information_source",
                 priority="min",
+                actions=None,
                 timeout=timeout,
             )
         )
@@ -382,6 +389,7 @@ def send_success_notifications(
                 title="Place disponible!",
                 tags="warning",
                 priority="max",
+                actions=f"view, S'inscrire, {FREE_DATES_VIEW_URL}",
                 timeout=timeout,
             )
         )
@@ -405,6 +413,7 @@ def send_error_notification(
             title="Erreur script serment",
             tags="warning,error",
             priority="high",
+            actions=None,
             timeout=timeout,
         )
     ]
