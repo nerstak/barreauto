@@ -24,6 +24,7 @@ import requests
 ENTRYPOINT_URL = "https://ssl.avocatparis.org/eInscription/Accueil.aspx"
 DATES_PAGE_URL = "https://ssl.avocatparis.org/eInscription/PaiementEtDateSerment.aspx"
 DATES_ENDPOINT_URL = f"{DATES_PAGE_URL}/ListerDatesSerment"
+NTFY_BASE_URL = os.getenv("NTFY_BASE_URL", "https://ntfy.sh").rstrip("/")
 DEFAULT_TIMEOUT = 30
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0",
@@ -228,6 +229,10 @@ def format_date(date_value: str) -> str:
     return date_value.split("T", 1)[0]
 
 
+def format_slots(item: dict[str, Any]) -> str:
+    return f"{item['places_libres']}/{item['places_totales']}"
+
+
 def render_dates_table(items: list[dict[str, Any]]) -> str:
     if not items:
         return "Aucune date disponible."
@@ -267,6 +272,149 @@ def render_dates_table(items: list[dict[str, Any]]) -> str:
     lines = [render_row(headers), separator]
     lines.extend(render_row(row) for row in rows)
     return "\n".join(lines)
+
+
+def build_all_dates_message(dates_result: dict[str, Any]) -> str:
+    available_items = [
+        item for item in dates_result["items"] if item["occupation_pourcent"] < 100.0
+    ]
+    unavailable_items = [
+        item for item in dates_result["items"] if item["occupation_pourcent"] >= 100.0
+    ]
+
+    lines: list[str] = []
+    if available_items:
+        lines.append("Dates disponibles")
+        lines.extend(
+            f"- {item['date']} ({format_slots(item)}) - {item['occupation_pourcent']:.1f}%"
+            for item in available_items
+        )
+        lines.append("")
+
+    lines.append("Dates indisponibles")
+    if unavailable_items:
+        lines.extend(
+            f"- {item['date']} ({format_slots(item)}) - {item['occupation_pourcent']:.1f}%"
+            for item in unavailable_items
+        )
+    else:
+        lines.append("- Aucune")
+
+    return "\n".join(lines)
+
+
+def build_free_dates_message(items: list[dict[str, Any]]) -> str:
+    lines = ["Dates avec disponibilité"]
+    for item in items:
+        lines.append(
+            f"- {item['date']} ({format_slots(item)}) - {item['occupation_pourcent']:.1f}%"
+        )
+    return "\n".join(lines)
+
+
+def publish_ntfy(
+    channel: str,
+    message: str,
+    *,
+    title: str,
+    tags: str,
+    priority: str,
+    timeout: int,
+) -> dict[str, Any]:
+    try:
+        response = requests.post(
+            f"{NTFY_BASE_URL}/{channel}",
+            data=message.encode("utf-8"),
+            headers={
+                "Title": title,
+                "Tags": tags,
+                "Priority": priority,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return {
+            "ok": True,
+            "channel": channel,
+            "title": title,
+            "priority": priority,
+            "status_code": response.status_code,
+        }
+    except requests.RequestException as exc:
+        return {
+            "ok": False,
+            "channel": channel,
+            "title": title,
+            "priority": priority,
+            "error": str(exc),
+        }
+
+
+def send_success_notifications(
+    dates_result: dict[str, Any],
+    *,
+    ntfy_all_channel: str | None,
+    ntfy_free_channel: str | None,
+    timeout: int,
+) -> list[dict[str, Any]]:
+    notifications: list[dict[str, Any]] = []
+
+    if ntfy_all_channel:
+        notifications.append(
+            publish_ntfy(
+                ntfy_all_channel,
+                build_all_dates_message(dates_result),
+                title="Run report",
+                tags="information_source",
+                priority="min",
+                timeout=timeout,
+            )
+        )
+
+    free_items = [
+        item for item in dates_result["items"] if item["occupation_pourcent"] < 100.0
+    ]
+    if ntfy_free_channel and free_items:
+        notifications.append(
+            publish_ntfy(
+                ntfy_free_channel,
+                build_free_dates_message(free_items),
+                title="Place disponible!",
+                tags="warning",
+                priority="max",
+                timeout=timeout,
+            )
+        )
+
+    return notifications
+
+
+def send_error_notification(
+    channel: str | None,
+    *,
+    stage: str,
+    message: str,
+    timeout: int,
+) -> list[dict[str, Any]]:
+    if not channel:
+        return []
+    return [
+        publish_ntfy(
+            channel,
+            f"{stage}: {message}",
+            title="Erreur script serment",
+            tags="warning,error",
+            priority="high",
+            timeout=timeout,
+        )
+    ]
+
+
+def summarize_notification_failures(notifications: list[dict[str, Any]]) -> str | None:
+    failures = [notification for notification in notifications if not notification.get("ok", False)]
+    if not failures:
+        return None
+    return "; ".join(f"{failure['channel']}: {failure['error']}" for failure in failures)
 
 
 def fetch_dates(session: requests.Session, *, timeout: int) -> dict[str, Any]:
@@ -416,6 +564,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--totp", default=os.getenv("AVOCATPARIS_TOTP"))
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument(
+        "--ntfy-all-channel",
+        default=os.getenv("NTFY_ALL_CHANNEL"),
+        help="ntfy.sh channel receiving errors and the full dates table.",
+    )
+    parser.add_argument(
+        "--ntfy-free-channel",
+        default=os.getenv("NTFY_FREE_CHANNEL"),
+        help="ntfy.sh channel receiving only dates with free capacity.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Optional JSON output path. Stdout is always written.",
@@ -449,42 +607,95 @@ def main() -> int:
         )
         if exit_code != 0:
             message = login_result.get("error_message") or "Erreur de connexion."
-            output = {"success": False, "stage": "login", "error": message, "login": login_result}
+            notifications = send_error_notification(
+                args.ntfy_all_channel,
+                stage="Erreur de connexion",
+                message=message,
+                timeout=args.timeout,
+            )
+            output = {
+                "success": False,
+                "stage": "login",
+                "error": message,
+                "login": login_result,
+                "notifications": notifications,
+            }
             rendered = json.dumps(output, ensure_ascii=False, indent=2)
-            print(rendered if args.json else f"Erreur de connexion: {message}")
+            notification_error = summarize_notification_failures(notifications)
+            if args.json:
+                print(rendered)
+            else:
+                suffix = f" | notification ntfy échouée: {notification_error}" if notification_error else ""
+                print(f"Erreur de connexion: {message}{suffix}")
             if args.output:
                 args.output.write_text(rendered + "\n", encoding="utf-8")
             return exit_code
 
         dates_result = fetch_dates(session, timeout=args.timeout)
+        notifications = send_success_notifications(
+            dates_result,
+            ntfy_all_channel=args.ntfy_all_channel,
+            ntfy_free_channel=args.ntfy_free_channel,
+            timeout=args.timeout,
+        )
         output = {
             "success": True,
             "stage": "dates",
             "login": login_result,
             "dates": dates_result,
+            "notifications": notifications,
         }
         rendered = json.dumps(output, ensure_ascii=False, indent=2)
+        notification_error = summarize_notification_failures(notifications)
 
         if args.json:
             print(rendered)
         else:
             print(dates_result["table"])
+            if notification_error:
+                print(f"Notification ntfy échouée: {notification_error}")
 
         if args.output:
             args.output.write_text(rendered + "\n", encoding="utf-8")
 
-        return 0
+        return 2 if notification_error else 0
     except requests.RequestException as exc:
+        notifications = send_error_notification(
+            args.ntfy_all_channel,
+            stage="Erreur réseau",
+            message=str(exc),
+            timeout=args.timeout,
+        )
         output = {"success": False, "error": str(exc)}
+        if notifications:
+            output["notifications"] = notifications
         rendered = json.dumps(output, ensure_ascii=False, indent=2)
-        print(rendered if args.json else f"Erreur réseau: {exc}")
+        notification_error = summarize_notification_failures(notifications)
+        if args.json:
+            print(rendered)
+        else:
+            suffix = f" | notification ntfy échouée: {notification_error}" if notification_error else ""
+            print(f"Erreur réseau: {exc}{suffix}")
         if args.output:
             args.output.write_text(rendered + "\n", encoding="utf-8")
         return 2
     except Exception as exc:
+        notifications = send_error_notification(
+            args.ntfy_all_channel,
+            stage="Erreur script",
+            message=str(exc),
+            timeout=args.timeout,
+        )
         output = {"success": False, "error": str(exc)}
+        if notifications:
+            output["notifications"] = notifications
         rendered = json.dumps(output, ensure_ascii=False, indent=2)
-        print(rendered if args.json else f"Erreur: {exc}")
+        notification_error = summarize_notification_failures(notifications)
+        if args.json:
+            print(rendered)
+        else:
+            suffix = f" | notification ntfy échouée: {notification_error}" if notification_error else ""
+            print(f"Erreur: {exc}{suffix}")
         if args.output:
             args.output.write_text(rendered + "\n", encoding="utf-8")
         return 2
