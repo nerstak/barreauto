@@ -1,0 +1,68 @@
+name: Serment dates
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC. Trigger on both DST and standard-time candidate hours,
+    # then keep only 10:00, 13:00, 17:00, 19:00 in Europe/Paris inside the job.
+    - cron: "0 8,9,11,12,15,16,17,18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serment-dates
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PIP_NO_CACHE_DIR: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      EMAIL: ${{ secrets.EMAIL }}
+      PASSWORD: ${{ secrets.PASSWORD }}
+      AVOCATPARIS_TOTP: ${{ secrets.AVOCATPARIS_TOTP }}
+      NTFY_ALL_CHANNEL: ${{ secrets.NTFY_ALL_CHANNEL }}
+      NTFY_FREE_CHANNEL: ${{ secrets.NTFY_FREE_CHANNEL }}
+    steps:
+      - name: Gate Paris schedule
+        id: gate
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          paris_hour="$(TZ=Europe/Paris date +%H)"
+          case "$paris_hour" in
+            10|13|17|19) echo "run=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "run=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Stop outside target hours
+        if: steps.gate.outputs.run != 'true'
+        run: echo "Skipping run outside target Paris hours."
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependency
+        if: steps.gate.outputs.run == 'true'
+        run: python -m pip install --quiet --disable-pip-version-check --no-input requests
+
+      - name: Run scraper
+        if: steps.gate.outputs.run == 'true'
+        run: python avocatparis_serment_dates.py --timeout 30

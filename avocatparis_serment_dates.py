@@ -24,7 +24,7 @@ import requests
 ENTRYPOINT_URL = "https://ssl.avocatparis.org/eInscription/Accueil.aspx"
 DATES_PAGE_URL = "https://ssl.avocatparis.org/eInscription/PaiementEtDateSerment.aspx"
 DATES_ENDPOINT_URL = f"{DATES_PAGE_URL}/ListerDatesSerment"
-NTFY_BASE_URL = os.getenv("NTFY_BASE_URL", "https://ntfy.sh").rstrip("/")
+NTFY_BASE_URL = (os.getenv("NTFY_BASE_URL") or "https://ntfy.sh").rstrip("/")
 DEFAULT_TIMEOUT = 30
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0",
@@ -559,8 +559,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Log in to ssl.avocatparis.org, fetch serment dates, and print availability."
     )
-    parser.add_argument("--username", default=os.getenv("AVOCATPARIS_USERNAME"))
-    parser.add_argument("--password", default=os.getenv("AVOCATPARIS_PASSWORD"))
+    parser.add_argument("--username", default=os.getenv("EMAIL"))
+    parser.add_argument("--password", default=os.getenv("PASSWORD"))
     parser.add_argument("--totp", default=os.getenv("AVOCATPARIS_TOTP"))
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument(
@@ -586,9 +586,9 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     if not args.username:
-        parser.error("Missing username. Pass --username or set AVOCATPARIS_USERNAME.")
+        parser.error("Missing username. Pass --username or set EMAIL.")
     if not args.password:
-        parser.error("Missing password. Pass --password or set AVOCATPARIS_PASSWORD.")
+        parser.error("Missing password. Pass --password or set PASSWORD.")
     if args.timeout <= 0:
         parser.error("--timeout must be > 0.")
 
