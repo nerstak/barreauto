@@ -71,3 +71,40 @@ Workflow: `.github/workflows/serment-dates.yml`
   - `NTFY_ALL_CHANNEL` (optional)
   - `NTFY_FREE_CHANNEL` (optional)
 
+## Systemd scheduling (Raspberry Pi)
+
+This repo includes a `systemd` timer setup to run in parallel with GitHub Actions.
+
+Files:
+- `systemd/barreauto.example.service`
+- `systemd/barreauto.example.timer`
+- `systemd/barreauto.env.example`
+
+Schedule is adapted for a host running in UTC+2:
+- `10:07`, `13:07`, `17:07`, `19:07` (local time)
+
+### Install
+
+Make sure `uv` is installed on the Raspberry Pi first.
+
+```bash
+cp systemd/barreauto.env.example systemd/barreauto.env
+# edit systemd/barreauto.env with your credentials/channels
+
+cp systemd/barreauto.example.service systemd/barreauto.service
+cp systemd/barreauto.example.timer systemd/barreauto.timer
+# edit PATH_TO_PROJECT in systemd/barreauto.service
+
+sudo cp systemd/barreauto.service /etc/systemd/system/
+sudo cp systemd/barreauto.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now barreauto.timer
+```
+
+### Check
+
+```bash
+systemctl status barreauto.timer
+systemctl list-timers --all | grep barreauto
+journalctl -u barreauto.service -n 100 --no-pager
+```

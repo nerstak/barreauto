@@ -1,0 +1,11 @@
+[Unit]
+Description=Barreauto Serment Dates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/PATH_TO_PROJECT/barreauto
+EnvironmentFile=/home/pi/PATH_TO_PROJECT/barreauto/systemd/barreauto.env
+ExecStart=/usr/bin/env uv run --script /home/pi/PATH_TO_PROJECT/barreauto/avocatparis_serment_dates.py --timeout 30
