@@ -11,14 +11,15 @@ Small Python script that logs into Barreau de Paris website, fetches serment dat
   - a full run report to `NTFY_ALL_CHANNEL`
   - a high-priority alert to `NTFY_FREE_CHANNEL` when free slots exist
 
-## Requirements
+## Usage
+### Requirements
 
 - Python 3.10+
 - `requests`
 
 This repo is also `uv`-friendly (script metadata is embedded in `avocatparis_serment_dates.py`).
 
-## Run locally
+### Run locally
 
 ```bash
 export EMAIL="you@example.com"
@@ -38,7 +39,7 @@ You can also run with `uv`:
 uv run avocatparis_serment_dates.py --timeout 30
 ```
 
-## Useful flags
+### Useful flags
 
 - `--json`: print full JSON result
 - `--output /path/file.json`: write JSON output to file
@@ -46,7 +47,7 @@ uv run avocatparis_serment_dates.py --timeout 30
 - `--ntfy-free-channel <channel>`: override free-slots channel
 - `--totp <code>`: pass TOTP code directly
 
-## Example output
+### Example output
 
 ```text
 date       | ouvert | selectionnable | places libres | places totales | occupation %
@@ -59,7 +60,8 @@ date       | ouvert | selectionnable | places libres | places totales | occupati
 2026-09-28 | oui    | oui            | 0             | 20             | 100.0
 ```
 
-## GitHub Actions
+## Deployment
+### GitHub Actions
 
 Workflow: `.github/workflows/serment-dates.yml`
 
@@ -71,7 +73,7 @@ Workflow: `.github/workflows/serment-dates.yml`
   - `NTFY_ALL_CHANNEL` (optional)
   - `NTFY_FREE_CHANNEL` (optional)
 
-## Systemd scheduling (Raspberry Pi)
+### Systemd scheduling (Raspberry Pi)
 
 This repo includes a `systemd` timer setup to run in parallel with GitHub Actions.
 
@@ -83,7 +85,7 @@ Files:
 Schedule is adapted for a host running in UTC+2:
 - `10:07`, `13:07`, `17:07`, `19:07` (local time)
 
-### Install
+#### Install
 
 Make sure `uv` is installed on the Raspberry Pi first.
 
@@ -101,7 +103,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now barreauto.timer
 ```
 
-### Check
+#### Check
 
 ```bash
 systemctl status barreauto.timer
