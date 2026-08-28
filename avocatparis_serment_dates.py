@@ -475,7 +475,9 @@ def send_success_notifications(
         )
 
     free_items = [
-        item for item in dates_result["items"] if item["occupation_pourcent"] < 100.0
+        item
+        for item in dates_result["items"]
+        if item["occupation_pourcent"] < 100.0 or item["places_libres"] > 0
     ]
     if ntfy_free_channel and free_items:
         notifications.append(
