@@ -2,11 +2,10 @@
 Description=Run Barreauto on schedule
 
 [Timer]
-# Local timezone schedule (UTC+2): 10:07, 13:07, 17:07, 19:07
-OnCalendar=*-*-* 10,13,17,19:07:00
+# Local timezone schedule: every 10 minutes from 09:00 through 19:50
+OnCalendar=*-*-* 09..19:00/10
 Persistent=true
 Unit=barreauto.service
 
 [Install]
 WantedBy=timers.target
-

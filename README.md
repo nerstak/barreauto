@@ -83,7 +83,7 @@ Files:
 - `systemd/barreauto.env.example`
 
 Schedule is adapted for a host running in UTC+2:
-- `10:07`, `13:07`, `17:07`, `19:07` (local time)
+- every 10 minutes from `09:00` through `19:50` (local time)
 
 #### Install
 
