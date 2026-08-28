@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
+from requests.cookies import create_cookie
 
 
 ENTRYPOINT_URL = "https://ssl.avocatparis.org/eInscription/Accueil.aspx"
@@ -27,6 +28,7 @@ DATES_ENDPOINT_URL = f"{DATES_PAGE_URL}/ListerDatesSerment"
 FREE_DATES_VIEW_URL = "https://ssl.avocatparis.org/einscription/Accueil.aspx"
 NTFY_BASE_URL = (os.getenv("NTFY_BASE_URL") or "https://ntfy.sh").rstrip("/")
 DEFAULT_TIMEOUT = 30
+DEFAULT_SESSION_STATE_PATH = Path.home() / ".cache" / "barreauto" / "session-state.json"
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko; compatible; Contentpass/1.0) Chrome/148.0.0.0 Safari/537.36",
@@ -124,9 +126,9 @@ def parse_page(html: str) -> ParsedPage:
     return parser.page
 
 
-def build_session() -> requests.Session:
+def build_session(*, user_agent: str | None = None) -> requests.Session:
     session = requests.Session()
-    user_agent = random.choice(USER_AGENTS)
+    user_agent = user_agent or random.choice(USER_AGENTS)
     session.headers.update(
         {
             "User-Agent": user_agent
@@ -197,6 +199,41 @@ def serialize_cookie(cookie: Any) -> dict[str, Any]:
     }
 
 
+def deserialize_cookie(cookie_data: dict[str, Any]) -> requests.cookies.Cookie:
+    name = cookie_data.get("name")
+    value = cookie_data.get("value")
+    if not isinstance(name, str) or not name.strip():
+        raise RuntimeError("Invalid cookie entry: missing name.")
+    if not isinstance(value, str):
+        raise RuntimeError(f"Invalid cookie entry for {name!r}: missing string value.")
+
+    domain = cookie_data.get("domain")
+    if domain is not None and not isinstance(domain, str):
+        raise RuntimeError(f"Invalid cookie entry for {name!r}: domain must be a string.")
+
+    path = cookie_data.get("path")
+    if path is not None and not isinstance(path, str):
+        raise RuntimeError(f"Invalid cookie entry for {name!r}: path must be a string.")
+
+    secure = cookie_data.get("secure", False)
+    if not isinstance(secure, bool):
+        raise RuntimeError(f"Invalid cookie entry for {name!r}: secure must be a boolean.")
+
+    expires = cookie_data.get("expires")
+    if expires is not None and not isinstance(expires, int):
+        raise RuntimeError(f"Invalid cookie entry for {name!r}: expires must be an integer or null.")
+
+    return create_cookie(
+        domain=domain or "",
+        name=name,
+        value=value,
+        path=path or "/",
+        secure=secure,
+        expires=expires,
+        rest={"HttpOnly": bool(cookie_data.get("http_only", False))},
+    )
+
+
 def session_cookie_candidates(cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:
     markers = ("session", "saml", "auth", "asp.net", "fedauth")
     return [
@@ -232,6 +269,65 @@ def format_date(date_value: str) -> str:
 
 def format_slots(item: dict[str, Any]) -> str:
     return f"{item['places_libres']}/{item['places_totales']}"
+
+
+def load_session_state(session: requests.Session, session_state_path: Path | None) -> dict[str, Any]:
+    if not session_state_path or not session_state_path.exists():
+        return {
+            "loaded": 0,
+            "user_agent": session.headers.get("User-Agent"),
+            "path": str(session_state_path) if session_state_path else None,
+            "valid": True,
+        }
+
+    state = json.loads(session_state_path.read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise RuntimeError("Invalid session state file: expected an object.")
+
+    user_agent = state.get("user_agent")
+    if isinstance(user_agent, str) and user_agent.strip():
+        session.headers["User-Agent"] = user_agent
+
+    cookies = state.get("cookies", [])
+    if not isinstance(cookies, list):
+        raise RuntimeError("Invalid session state file: cookies must be a list.")
+
+    loaded = 0
+    for cookie_data in cookies:
+        if not isinstance(cookie_data, dict) or "name" not in cookie_data or "value" not in cookie_data:
+            continue
+        session.cookies.set_cookie(deserialize_cookie(cookie_data))
+        loaded += 1
+
+    return {
+        "loaded": loaded,
+        "user_agent": session.headers.get("User-Agent"),
+        "path": str(session_state_path),
+        "valid": loaded > 0,
+    }
+
+
+def save_session_state(
+    session: requests.Session,
+    session_state_path: Path | None,
+) -> None:
+    if not session_state_path:
+        return
+
+    session_state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "user_agent": session.headers.get("User-Agent", ""),
+        "cookies": [serialize_cookie(cookie) for cookie in session.cookies],
+    }
+    tmp_path = session_state_path.with_suffix(session_state_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    tmp_path.replace(session_state_path)
+
+
+def clear_session_state(session_state_path: Path | None) -> None:
+    if session_state_path and session_state_path.exists():
+        session_state_path.unlink()
 
 
 def render_dates_table(items: list[dict[str, Any]]) -> str:
@@ -496,14 +592,13 @@ def fetch_dates(session: requests.Session, *, timeout: int) -> dict[str, Any]:
 
 
 def run_login(
+    session: requests.Session,
     username: str,
     password: str,
     *,
     totp: str | None,
     timeout: int,
 ) -> tuple[requests.Session, dict[str, Any], int]:
-    session = build_session()
-
     login_page_response = session.get(ENTRYPOINT_URL, allow_redirects=True, timeout=timeout)
     login_page_response.raise_for_status()
     login_page = parse_page(login_page_response.text)
@@ -588,6 +683,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON output path. Stdout is always written.",
     )
     parser.add_argument(
+        "--session-state",
+        type=Path,
+        default=Path(os.getenv("AVOCATPARIS_SESSION_STATE", DEFAULT_SESSION_STATE_PATH)),
+        help="Optional JSON file storing the session cookies and user-agent between runs.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print the full JSON result instead of the human-readable summary.",
@@ -608,39 +709,103 @@ def main() -> int:
     args = parse_args()
 
     try:
-        session, login_result, exit_code = run_login(
-            args.username,
-            args.password,
-            totp=args.totp,
-            timeout=args.timeout,
-        )
-        if exit_code != 0:
-            message = login_result.get("error_message") or "Erreur de connexion."
-            notifications = send_error_notification(
-                args.ntfy_all_channel,
-                stage="Erreur de connexion",
-                message=message,
+        session = build_session()
+        try:
+            session_state = load_session_state(session, args.session_state)
+        except (OSError, json.JSONDecodeError, RuntimeError):
+            clear_session_state(args.session_state)
+            session_state = {
+                "loaded": 0,
+                "user_agent": session.headers.get("User-Agent"),
+                "path": str(args.session_state) if args.session_state else None,
+                "valid": False,
+            }
+        login_result: dict[str, Any]
+
+        dates_result: dict[str, Any] | None = None
+        reused_session_failed = False
+        if session_state["loaded"] > 0:
+            try:
+                dates_result = fetch_dates(session, timeout=args.timeout)
+                login_result = {
+                    "success": True,
+                    "reused_session": True,
+                    "user_agent": session.headers["User-Agent"],
+                    "loaded_cookies": session_state["loaded"],
+                    "session_candidates": session_cookie_candidates(
+                        [serialize_cookie(cookie) for cookie in session.cookies]
+                    ),
+                    "cookies": [serialize_cookie(cookie) for cookie in session.cookies],
+                    "session_state": session_state,
+                }
+            except (requests.HTTPError, RuntimeError):
+                reused_session_failed = True
+                clear_session_state(args.session_state)
+                session = build_session()
+                dates_result = None
+
+        if dates_result is None:
+            session, login_result, exit_code = run_login(
+                session,
+                args.username,
+                args.password,
+                totp=args.totp,
                 timeout=args.timeout,
             )
-            output = {
-                "success": False,
-                "stage": "login",
-                "error": message,
-                "login": login_result,
-                "notifications": notifications,
-            }
-            rendered = json.dumps(output, ensure_ascii=False, indent=2)
-            notification_error = summarize_notification_failures(notifications)
-            if args.json:
-                print(rendered)
-            else:
-                suffix = f" | notification ntfy échouée: {notification_error}" if notification_error else ""
-                print(f"Erreur de connexion: {message}{suffix}")
-            if args.output:
-                args.output.write_text(rendered + "\n", encoding="utf-8")
-            return exit_code
+            if exit_code != 0:
+                message = login_result.get("error_message") or "Erreur de connexion."
+                notifications = send_error_notification(
+                    args.ntfy_all_channel,
+                    stage="Erreur de connexion",
+                    message=message,
+                    timeout=args.timeout,
+                )
+                output = {
+                    "success": False,
+                    "stage": "login",
+                    "error": message,
+                    "login": login_result,
+                    "notifications": notifications,
+                }
+                rendered = json.dumps(output, ensure_ascii=False, indent=2)
+                notification_error = summarize_notification_failures(notifications)
+                if args.json:
+                    print(rendered)
+                else:
+                    suffix = f" | notification ntfy échouée: {notification_error}" if notification_error else ""
+                    print(f"Erreur de connexion: {message}{suffix}")
+                if args.output:
+                    args.output.write_text(rendered + "\n", encoding="utf-8")
+                return exit_code
 
-        dates_result = fetch_dates(session, timeout=args.timeout)
+            try:
+                dates_result = fetch_dates(session, timeout=args.timeout)
+            except (requests.HTTPError, RuntimeError) as exc:
+                notifications = send_error_notification(
+                    args.ntfy_all_channel,
+                    stage="Erreur récupération des dates",
+                    message=str(exc),
+                    timeout=args.timeout,
+                )
+                output = {
+                    "success": False,
+                    "stage": "dates",
+                    "error": str(exc),
+                    "login": login_result,
+                    "notifications": notifications,
+                    "reused_session_failed": reused_session_failed,
+                }
+                rendered = json.dumps(output, ensure_ascii=False, indent=2)
+                notification_error = summarize_notification_failures(notifications)
+                if args.json:
+                    print(rendered)
+                else:
+                    suffix = f" | notification ntfy échouée: {notification_error}" if notification_error else ""
+                    print(f"Erreur récupération des dates: {exc}{suffix}")
+                if args.output:
+                    args.output.write_text(rendered + "\n", encoding="utf-8")
+                return 2
+
         notifications = send_success_notifications(
             dates_result,
             ntfy_all_channel=args.ntfy_all_channel,
@@ -666,6 +831,7 @@ def main() -> int:
 
         if args.output:
             args.output.write_text(rendered + "\n", encoding="utf-8")
+        save_session_state(session, args.session_state)
 
         return 2 if notification_error else 0
     except requests.RequestException as exc:

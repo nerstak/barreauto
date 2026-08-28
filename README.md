@@ -43,6 +43,7 @@ uv run avocatparis_serment_dates.py --timeout 30
 
 - `--json`: print full JSON result
 - `--output /path/file.json`: write JSON output to file
+- `--session-state /path/file.json`: persist cookies and user-agent between runs
 - `--ntfy-all-channel <channel>`: override all-events channel
 - `--ntfy-free-channel <channel>`: override free-slots channel
 - `--totp <code>`: pass TOTP code directly
@@ -70,6 +71,7 @@ Workflow: `.github/workflows/serment-dates.yml`
   - `EMAIL`
   - `PASSWORD`
   - `AVOCATPARIS_TOTP` (optional)
+  - `AVOCATPARIS_SESSION_STATE` (optional; defaults to `~/.cache/barreauto/session-state.json`)
   - `NTFY_ALL_CHANNEL` (optional)
   - `NTFY_FREE_CHANNEL` (optional)
 
@@ -84,6 +86,8 @@ Files:
 
 Schedule is adapted for a host running in UTC+2:
 - every 10 minutes from `09:00` through `19:50` (local time)
+
+The script can also persist cookies and the user-agent between runs by storing them in the session state file above. If that file has invalid values or the saved session is no longer valid, the script falls back to a fresh login and rewrites it.
 
 #### Install
 
